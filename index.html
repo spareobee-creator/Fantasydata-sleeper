@@ -42,7 +42,7 @@ tr:hover td{background:var(--card)}
 <input id="lid" value="1319523721911734272" style="flex:1;min-width:200px">
 <label class="mut"><input type="checkbox" id="po"> include playoffs</label>
 <button id="go">Load</button></div>
-<div class="row"><span id="st" class="mut"></span><button id="snap" hidden>Save shareable snapshot</button></div></div>
+<div class="row"><span id="st" class="mut"></span><button id="snap" hidden>Save shareable snapshot</button><button id="csv" hidden>Export tab as CSV</button></div></div>
 <div class="row tabs" id="tabs" hidden></div>
 <div id="out"></div>
 <script id="snapdata"></script>
@@ -59,14 +59,16 @@ async function fetchAll(id){
     $('st').textContent='Loading season '+(seasons.length+1)+'...';
     const [lg,rs,us,wb,dr]=await Promise.all([j('/league/'+id),j('/league/'+id+'/rosters'),j('/league/'+id+'/users'),
       j('/league/'+id+'/winners_bracket').catch(()=>[]),j('/league/'+id+'/drafts').catch(()=>[])]);
-    const own={},rost={};rs.forEach(r=>{own[r.roster_id]=r.owner_id;const t=r.settings||{};
-      rost[r.owner_id]={f:(t.fpts||0)+(t.fpts_decimal||0)/100,p:t.ppts?t.ppts+(t.ppts_decimal||0)/100:0}});
+    const own={},rost={},div={},dn={};Object.keys(lg.metadata||{}).forEach(k=>{const m=/^division_(\d+)$/.exec(k);if(m)dn[m[1]]=lg.metadata[k]});rs.forEach(r=>{own[r.roster_id]=r.owner_id;const t=r.settings||{};
+      div[r.owner_id]=t.division;rost[r.owner_id]={f:(t.fpts||0)+(t.fpts_decimal||0)/100,p:t.ppts?t.ppts+(t.ppts_decimal||0)/100:0}});
     us.forEach(u=>{if(!names[u.user_id])names[u.user_id]=u.display_name});
     const rng=[...Array(18)];
-    const [wk,tr,pk,t0]=await Promise.all([
+    const [wk,tr,pk,t0,dd,tpr]=await Promise.all([
       Promise.all(rng.map((_,i)=>jr('/league/'+id+'/matchups/'+(i+1)).catch(()=>[]))),
       Promise.all(rng.map((_,i)=>jr('/league/'+id+'/transactions/'+(i+1)).catch(()=>[]))),
-      dr.length?j('/draft/'+dr[0].draft_id+'/picks').catch(()=>[]):Promise.resolve([]),j('/league/'+id+'/transactions/0').catch(()=>[])]);
+      dr.length?j('/draft/'+dr[0].draft_id+'/picks').catch(()=>[]):Promise.resolve([]),j('/league/'+id+'/transactions/0').catch(()=>[]),
+      dr.length?j('/draft/'+dr[0].draft_id).catch(()=>null):Promise.resolve(null),
+      seasons.length===0?j('/league/'+id+'/traded_picks').catch(()=>[]):Promise.resolve([])]);
     tr[0]=(tr[0]||[]).concat(t0||[]);
     const pws=lg.settings.playoff_week_start||99,games=[];
     wk.forEach((m,i)=>{const g={};m.forEach(x=>{if(x.matchup_id!=null)(g[x.matchup_id]=g[x.matchup_id]||[]).push(x)});
@@ -87,10 +89,16 @@ async function fetchAll(id){
       Object.entries(t.adds||{}).forEach(([pid,r])=>{const o=own[r];if(!sides[o])return;
         const ws=Object.entries(pp[pid]||{}).filter(([w])=>+w>=i+1&&+w<pws),ros=ws.reduce((z,[,v])=>z+v,0),stp=ws.reduce((z,[w,v])=>z+((sp[pid]||{})[w]===r?v:0),0);
         sides[o].got.push([pid,+ros.toFixed(1),+stp.toFixed(1)])});
-      (t.draft_picks||[]).forEach(d=>{const o=own[d.owner_id];if(sides[o])sides[o].picks.push([String(d.season),+d.round,d.roster_id])});
+      (t.draft_picks||[]).forEach(d=>{const o=own[d.owner_id];if(sides[o])sides[o].picks.push([String(d.season),+d.round,d.roster_id,own[d.previous_owner_id]])});
       trades.push({season:lg.season,wk:i+1,c:t.creator,sides})}));
     draft.forEach((d,ix)=>{const pid=pk[ix].player_id;d.pid=pid;d.pts=+Object.entries(pp[pid]||{}).filter(([w])=>+w<pws).reduce((z,[,v])=>z+v,0).toFixed(1);d.sl=pk[ix].draft_slot;
-      d.st=+Object.entries(sp[pid]||{}).filter(([w,r])=>+w<pws&&r===pk[ix].roster_id).reduce((z,[w])=>z+(pp[pid][w]||0),0).toFixed(1)});
+      d.st=+Object.entries(sp[pid]||{}).filter(([w,r])=>+w<pws&&r===pk[ix].roster_id).reduce((z,[w])=>z+(pp[pid][w]||0),0).toFixed(1);
+      // impact: weeks he started for the team that made the pick, and whether that team won those games
+      const ro=own[pk[ix].roster_id],cw=fin&&own[fin.w],im={sw:0,sx:0,pg:0,pgw:0,pst:0};
+      Object.entries(sp[pid]||{}).forEach(([w,r])=>{if(r!==pk[ix].roster_id)return;const g=games.find(q=>q.week==+w&&(q.a===ro||q.b===ro));if(!g)return;
+        const won=g.a===ro?g.pa>g.pb:g.pb>g.pa;
+        if(+w<pws){im.sw++;if(won)im.sx++}else{im.pg++;if(won)im.pgw++;im.pst+=(pp[pid]||{})[w]||0}});
+      d.sw=im.sw;d.sx=im.sx;d.pg=im.pg;d.pgw=im.pgw;d.pst=+im.pst.toFixed(1);d.ch=!!(cw&&ro===cw&&im.pg>0);d.cw=cw&&ro===cw;d.own=ro});
     const pos=pid=>(P[pid]||{}).position||'?';
     const EL={QB:['QB'],RB:['RB'],WR:['WR'],TE:['TE'],K:['K'],DEF:['DEF'],FLEX:['RB','WR','TE'],SUPER_FLEX:['QB','RB','WR','TE'],REC_FLEX:['WR','TE'],WRRB_FLEX:['WR','RB'],DL:['DL'],LB:['LB'],DB:['DB'],IDP_FLEX:['DL','LB','DB']};
     const slots=(lg.roster_positions||[]).filter(x=>EL[x]).map(x=>EL[x]).sort((a,b)=>a.length-b.length),lu={},ps={},wkc={},blun=[];
@@ -115,12 +123,13 @@ async function fetchAll(id){
         e.n++;e.bid+=bid;e.stp=+(e.stp+stp).toFixed(1);wbest.push([o,pid,i+1,bid,+ros.toFixed(1),+stp.toFixed(1)])});
       Object.entries(t.drops||{}).forEach(([pid,r])=>{const o=own[r];if(!o)return;const ros=Object.entries(pp[pid]||{}).filter(([w])=>+w>i+1&&+w<pws).reduce((z,[,v])=>z+v,0);if(ros>0)wdrop.push([o,pid,i+1,+ros.toFixed(1)])})}));
     wbest.sort((a,b)=>b[5]-a[5]);wbest.length=Math.min(wbest.length,40);wdrop.sort((a,b)=>b[3]-a[3]);wdrop.length=Math.min(wdrop.length,25);
-    seasons.push({slots:(dr[0]||{}).slot_to_roster_id||{},season:lg.season,games,alive,pws,champ:fin&&own[fin.w],runner:fin&&own[fin.l],rost,tx,draft,trades,failed,lu,ps,wkc,blun,topPos,wv,wbest,wdrop});
+    const done=dr[0]&&dr[0].status==='complete',tpk=(tpr||[]).filter(q=>own[q.owner_id]&&own[q.roster_id]&&q.owner_id!==q.roster_id&&(+q.season>+lg.season||(+q.season===+lg.season&&!done))).map(q=>({s:String(q.season),r:q.round,og:own[q.roster_id],ow:own[q.owner_id]}));
+    seasons.push({div,dn,tpk,slots:(dd&&dd.slot_to_roster_id)||(dr[0]||{}).slot_to_roster_id||{},season:lg.season,games,alive,pws,champ:fin&&own[fin.w],runner:fin&&own[fin.l],rost,tx,draft,trades,failed,lu,ps,wkc,blun,topPos,wv,wbest,wdrop});
     id=lg.previous_league_id;
   }
   const bs=Object.fromEntries(seasons.map(z=>[z.season,z]));
-  seasons.forEach(z=>z.trades.forEach(t=>Object.values(t.sides).forEach(x=>{x.pk=x.picks.map(([sn,r,or])=>{const Z=bs[sn],sl=Z&&Object.keys(Z.slots||{}).find(k=>Z.slots[k]==or),d=sl&&Z.draft.find(q=>q.r==r&&q.sl==sl);
-    return d&&d.pid?{l:sn+' R'+r,n:d.nm.trim()+(d.pos?' ('+d.pos+')':''),ros:d.pts,st:d.st}:{l:sn+' R'+r}})})));
+  seasons.forEach(z=>z.trades.forEach(t=>Object.values(t.sides).forEach(x=>{x.pk=x.picks.map(([sn,r,or,po])=>{const Z=bs[sn],sl=Z&&Object.keys(Z.slots||{}).find(k=>Z.slots[k]==or),d=sl&&Z.draft.find(q=>q.r==r&&q.sl==sl);
+    return d&&d.pid?{l:sn+' R'+r,n:d.nm.trim()+(d.pos?' ('+d.pos+')':''),ros:d.pts,st:d.st,sw:d.sw,sx:d.sx,pg:d.pg,pgw:d.pgw,pst:d.pst,ch:d.ch,cw:d.cw,pn:d.n,po}:{l:sn+' R'+r,po}})})));
   const pids=new Set(),pn={};seasons.forEach(z=>{z.trades.forEach(t=>Object.values(t.sides).forEach(x=>x.got.forEach(g=>pids.add(g[0]))));
     Object.values(z.wkc).forEach(l=>l.forEach(e=>pids.add(e[0])));z.blun.forEach(x=>x[4]&&pids.add(x[4]));z.wbest.forEach(x=>pids.add(x[1]));z.wdrop.forEach(x=>pids.add(x[1]));
     Object.values(z.topPos).forEach(l=>l.forEach(e=>pids.add(e[0])));z.draft.forEach(d=>d.pid&&pids.add(d.pid))});
@@ -132,6 +141,9 @@ const nm=id=>D.names[id]||id,rec=r=>r?`${r.w}-${r.l}${r.t?'-'+r.t:''}`:'0-0';
 const pct=r=>{const n=r.w+r.l+r.t;return n?((r.w+r.t/2)/n*100).toFixed(1)+'%':'-'};
 const f1=x=>(+x).toFixed(1),f2=x=>(+x).toFixed(2);
 const tbl=(h,r)=>'<div class="wrap"><table><tr>'+h.map(x=>`<th>${x}</th>`).join('')+'</tr>'+r.map(x=>'<tr>'+x.map(c=>`<td>${c}</td>`).join('')+'</tr>').join('')+'</table></div>';
+const mkSort=()=>document.querySelectorAll('#out table').forEach(t=>{const hs=t.rows[0]?[...t.rows[0].cells]:[];hs.forEach((h,ci)=>{h.style.cursor='pointer';h.title='Click to sort';h.onclick=()=>{const d=h.dataset.d==='1'?-1:1;hs.forEach(x=>x.dataset.d='');h.dataset.d=d===1?'1':'-1';
+  const rows=[...t.rows].slice(1),v=r=>{const x=(r.cells[ci]||{}).textContent||'',n=parseFloat(x.replace(/[^0-9.\-+]/g,''));return isNaN(n)?x:n};
+  rows.sort((a,b)=>{const p=v(a),q=v(b);return(typeof p==='number'&&typeof q==='number'?p-q:String(p).localeCompare(String(q)))*d*-1});rows.forEach(r=>r.parentNode.appendChild(r))}})});
 const sel=(id,ids)=>`<select id="${id}">${ids.map(i=>`<option value="${i}">${nm(i)}</option>`).join('')}</select>`;
 const inBr=(s,o)=>Object.values(s.alive).some(a=>a.includes(o));
 function compute(){
@@ -168,7 +180,15 @@ function render(){
     o.innerHTML=tbl(['Manager','Record','Win%','PF','PA'],s.map(i=>{const r=C.ov[i];return[nm(i),rec(r),pct(r),r.pf.toFixed(0),r.pa.toFixed(0)]}));
   }else if(tab==='h2h'){
     o.innerHTML='<p class="mut">Row manager\'s record vs column manager.</p>'+tbl(['',...ids.map(nm)],ids.map(a=>[nm(a),...ids.map(b=>{
-      if(a===b)return'-';const r=(C.h2h[a]||{})[b];return r?`<span class="${r.w>r.l?'w':r.w<r.l?'l':''}">${rec(r)}</span>`:'-'})]));
+      if(a===b)return'-';const r=(C.h2h[a]||{})[b];return r?`<span class="${r.w>r.l?'w':r.w<r.l?'l':''}">${rec(r)}</span>`:'-'})]))+(()=>{
+      const PR={};ids.forEach(a=>ids.forEach(b=>{if(a<b){const r=(C.h2h[a]||{})[b];PR[a+'|'+b]={a,b,g:r?r.w+r.l+r.t:0,r,ds:[],dg:0}}}));
+      D.seasons.forEach(z=>{const dv=z.div||{},ks=Object.keys(PR);ks.forEach(k=>{const p=PR[k];if(dv[p.a]!=null&&dv[p.a]===dv[p.b])p.ds.push(z.season)});
+        z.games.filter(g=>g.a&&g.b&&($('po').checked||!g.po)).forEach(g=>{const p=PR[[g.a,g.b].sort().join('|')];if(p&&(z.div||{})[g.a]!=null&&z.div[g.a]===z.div[g.b])p.dg++})});
+      const top=(f,n=10)=>Object.values(PR).filter(p=>f(p)>0).sort((x,y)=>f(y)-f(x)||y.g-x.g).slice(0,n);
+      const nmp=p=>nm(p.a)+' & '+nm(p.b);
+      return '<h3>Who has played each other the most</h3>'+tbl(['Pair','Games','Record (first-named)'],top(p=>p.g).map(p=>[nmp(p),p.g,p.r?rec(p.r):'-']))+
+        '<h3>Most seasons in the same division</h3><p class="mut">Seasons both managers were in the same division, plus games played against each other in those seasons.</p>'+
+        tbl(['Pair','Seasons together','Divisional games','Seasons'],top(p=>p.ds.length).map(p=>[nmp(p),p.ds.length,p.dg,p.ds.join(', ')]))})();
   }else if(tab==='vs'){
     o.innerHTML=`<div class="row">${sel('A',ids)} vs ${sel('B',ids)}</div><div id="vo"></div>`;$('B').selectedIndex=Math.min(1,ids.length-1);
     bind(()=>{const a=$('A').value,b=$('B').value,r=(C.h2h[a]||{})[b];
@@ -198,31 +218,50 @@ function render(){
           const rv=A.filter(x=>x!==m&&sc[w][x]!=null).map(x=>sc[w][x]),flag=rv.length&&me>Math.max(...rv)&&!(A.includes(m)&&me>opp)&&!Object.keys(s.alive).some(k=>+k>w&&s.alive[k].includes(m)&&!A.includes(m));if(flag)h++;det.push(`W${w}: ${f1(me)}${flag?'*':''}`)});
         hits+=h;if(h)seas++;rows.push([s.season,inBr(s,m)?'Yes':'No',`${h}/${wks.length}`,det.join(' · ')])});
       $('mo').innerHTML=`<div class="card"><div class="big">${hits} weeks</div><div class="mut">across ${seas} season(s)</div></div>`+tbl(['Season','Made bracket','Flagged','Scores'],rows)},'M');
-  }else if(tab==='luck'){
-    const PL={};
-    D.seasons.forEach(s=>{const wk={};s.games.filter(g=>g.po&&g.a&&g.b).forEach(g=>{(wk[g.week]=wk[g.week]||{})[g.a]=g.pa;wk[g.week][g.b]=g.pb});
-      Object.entries(wk).forEach(([w,sc])=>{const A=(s.alive[w]||[]).filter(x=>sc[x]!=null);if(A.length<2)return;
-        s.games.filter(g=>g.week==w&&A.includes(g.a)&&A.includes(g.b)).forEach(g=>[[g.a,g.pa,g.pb],[g.b,g.pb,g.pa]].forEach(([x,f,q])=>{
-          const e=PL[x]=PL[x]||{w:0,l:0,ex:0,top:0,out:0,adv:0};f>q?e.w++:e.l++;
-          e.ex+=A.filter(y=>y!==x&&sc[x]>sc[y]).length/(A.length-1);
-          if(A.every(y=>y===x||sc[x]>sc[y])){e.top++;if(f<q)e.out++}else if(f>q)e.adv++}))})});
-    const lk=i=>C.reg[i].w-wp(C.ap[i])*(C.reg[i].w+C.reg[i].l+C.reg[i].t),pk=i=>PL[i]?PL[i].w-PL[i].ex:0,sg=d=>`<span class="${d>0?'w':'l'}">${d>0?'+':''}${f1(d)}</span>`;
-    const TL={},RU={};D.seasons.forEach(z=>{const W={},N={},wk={};z.games.filter(g=>!g.po&&g.a&&g.b).forEach(g=>{(wk[g.week]=wk[g.week]||[]).push([g.a,g.pa],[g.b,g.pb])});
-      Object.values(wk).forEach(l=>l.forEach(([x,p],i)=>l.forEach(([y,q],k)=>{if(i===k)return;W[x]=(W[x]||0)+(p>q?1:p===q?.5:0);N[x]=(N[x]||0)+1})));
-      const br=[...new Set(Object.values(z.alive).flat())].filter(x=>N[x]),tw=br.reduce((a,x)=>a+W[x]/N[x],0);
-      br.forEach(x=>{const e=TL[x]=TL[x]||{ex:0,t:0};e.ex+=tw?W[x]/N[x]/tw:0;if(z.champ===x)e.t++})});
-    ids.forEach(i=>{let c=0,b=0,n=0;D.seasons.forEach(z=>{if(z.runner===i){n++;c++;b=Math.max(b,c)}else c=0});RU[i]={n,b}});
-    const tl=i=>TL[i]?TL[i].t-TL[i].ex:0,tot=i=>lk(i)+pk(i)+3*tl(i),nt=i=>((C.fin[i]||{ranks:[]}).ranks.filter(r=>r[1]===1&&D.seasons.find(z=>z.season===r[0]).champ!==i).length);
-    const s=[...ids].filter(i=>C.ap[i]).sort((a,b)=>tot(a)-tot(b));
-    o.innerHTML='<p class="mut">Regular season: actual wins vs all-play expectation. Playoffs: bracket wins vs how many still-alive teams you outscored that week. Title luck: actual titles minus expected titles, where each bracket team gets a title share proportional to its all-play win% that season. Unluck score = reg luck + playoff luck + 3 x title luck (a title counts as 3 wins), so a top regular-season record that keeps ending as runner-up or with no title ranks as most unlucky. Unluckiest first.</p>'+
-      tbl(['Manager','Reg record','Reg luck','Playoff luck','Titles (expected)','Runner-ups','Longest runner-up run','#1 seed, no title','Unluck score'],s.map(i=>{const e=TL[i]||{t:0,ex:0};
-        return[nm(i),`${rec(C.reg[i])} (${pct(C.reg[i])})`,sg(lk(i)),sg(pk(i)),`${e.t} (${f1(e.ex)})`,RU[i].n,RU[i].b,nt(i),sg(tot(i))]}))+
-      '<h3>Playoff detail</h3><p class="mut">Top-score week = you outscored every other alive team.</p>'+
-      tbl(['Manager','Top-score weeks','Out as top scorer','Advanced without it'],s.filter(i=>PL[i]).map(i=>[nm(i),PL[i].top,`<span class="l">${PL[i].out}</span>`,`<span class="w">${PL[i].adv}</span>`]))+
-      '<h3>Top seed vs champion</h3>'+tbl(['Season','Reg. season #1','Result','Champion'],D.seasons.map(s=>{
-        const r1=Object.keys(C.fin).find(i=>C.fin[i].ranks.some(r=>r[0]===s.season&&r[1]===1));if(!r1)return[s.season,'-','-','-'];
-        const res=s.champ===r1?'Won title':s.runner===r1?'Lost final':inBr(s,r1)?'Lost in playoffs':'Missed bracket';
-        return[s.season,nm(r1),res,s.champ?nm(s.champ):'-']}));
+  }else if(tab==='div'){
+    const has=D.seasons.filter(z=>Object.values(z.div||{}).some(v=>v!=null));
+    if(!has.length){o.innerHTML='<p class="mut">No division data found.</p>';return}
+    const SD=z=>{const dv=z.div,T={};z.games.filter(g=>!g.po&&g.a&&g.b).forEach(g=>[[g.a,g.pa,g.pb,g.b],[g.b,g.pb,g.pa,g.a]].forEach(([x,f,q,y])=>{const d=dv[x];if(d==null)return;
+        const r=(T[d]=T[d]||{})[x]=T[d][x]||{w:0,l:0,t:0,pf:0,dw:0,dl:0,dt:0},k=f>q?'w':f<q?'l':'t';r[k]++;r.pf+=f;if(dv[y]===d)r['d'+k]++}));return T},
+      so=m=>Object.keys(m).sort((a,b)=>(m[b].w+m[b].t/2)-(m[a].w+m[a].t/2)||m[b].pf-m[a].pf),AT={};
+    has.forEach(z=>Object.entries(SD(z)).forEach(([d,m])=>{const od=so(m);Object.entries(m).forEach(([x,r])=>{const e=AT[x]=AT[x]||{dw:0,dl:0,dt:0,t:[],n:0};e.dw+=r.dw;e.dl+=r.dl;e.dt+=r.dt;e.n++;if(x===od[0])e.t.push(z.season)})}));
+    o.innerHTML=`<div class="row"><select id="Y">${has.map(z=>`<option>${z.season}</option>`).join('')}</select></div><div id="dvo"></div>`;$('Y').selectedIndex=has.length-1;
+    bind(()=>{const z=has.find(q=>q.season===$('Y').value),T=SD(z);
+      $('dvo').innerHTML='<p class="mut">Regular season only. Division winner = best overall record in the division (ties broken by points for).</p>'+Object.keys(T).sort().map(d=>{const m=T[d],od=so(m);
+        return `<h3>${(z.dn||{})[d]||'Division '+d}</h3>`+tbl(['','Manager','Record','Division record','PF'],od.map((x,i)=>[i?'':'&#9733;',nm(x),rec(m[x]),rec({w:m[x].dw,l:m[x].dl,t:m[x].dt}),f1(m[x].pf)]))}).join('')+
+      '<h3>All-time in divisions</h3>'+tbl(['Manager','Division titles','Seasons','Division record','Division win%'],Object.keys(AT).sort((a,b)=>AT[b].t.length-AT[a].t.length||(AT[b].dw-AT[b].dl)-(AT[a].dw-AT[a].dl)).map(x=>{const e=AT[x],g=e.dw+e.dl+e.dt;return[nm(x),e.t.length,e.t.join(', ')||'-',rec({w:e.dw,l:e.dl,t:e.dt}),g?((e.dw+e.dt/2)/g*100).toFixed(1)+'%':'-']}));mkSort()},'Y');
+  }else if(tab==='pledger'){
+    const E={},g=x=>E[x]=E[x]||{ga:0,se:0,gp:0,sp:0,gw:0,sw:0,ch:0,sch:0};
+    D.seasons.forEach(z=>z.trades.forEach(t=>Object.entries(t.sides).forEach(([x,sd])=>(sd.pk||[]).forEach(p=>{const a=g(x);a.ga++;a.gp+=p.ros||0;a.gw+=p.sx||0;if(p.ch)a.ch++;
+      if(p.po&&p.po!==x){const b=g(p.po);b.se++;b.sp+=p.ros||0;b.sw+=p.sx||0;if(p.ch)b.sch++}}))));
+    const ks=Object.keys(E).sort((a,b)=>(E[b].gp-E[b].sp)-(E[a].gp-E[a].sp)),sg=d=>`<span class="${d>0?'w':d<0?'l':''}">${d>0?'+':''}${f1(d)}</span>`;
+    const F=(D.seasons[0]||{}).tpk||[],fm={};F.forEach(q=>{(fm[q.ow]=fm[q.ow]||{g:0,s:0}).g++;(fm[q.og]=fm[q.og]||{g:0,s:0}).s++});
+    o.innerHTML='<p class="mut">All picks acquired and sent in completed trades, valued by the regular-season points of the player taken with each pick (sent picks = points the player scored for the team that received the pick). Wins = games those players started in for the pick-owning team; title = their team won the championship with them in the lineup. Picks not yet drafted add 0. Click a heading to sort.</p>'+
+      tbl(['Manager','Picks acquired','Picks sent','Net picks','Pts from acquired','Pts from sent','Net pts','Wins from acquired','Titles helped (acquired)','Titles helped (sent)'],ks.map(x=>{const e=E[x];return[nm(x),e.ga,e.se,(e.ga-e.se>0?'+':'')+(e.ga-e.se),f1(e.gp),f1(e.sp),sg(e.gp-e.sp),e.gw,e.ch,e.sch]}))+
+      (F.length?'<h3>Upcoming picks that have changed hands</h3>'+tbl(['Season','Round','Original owner','Current owner'],[...F].sort((a,b)=>a.s-b.s||a.r-b.r).map(q=>[q.s,q.r,nm(q.og),nm(q.ow)]))+
+        '<h3>Net upcoming picks</h3>'+tbl(['Manager','Acquired','Traded away','Net'],Object.keys(fm).sort((a,b)=>(fm[b].g-fm[b].s)-(fm[a].g-fm[a].s)).map(x=>[nm(x),fm[x].g,fm[x].s,(fm[x].g-fm[x].s>0?'+':'')+(fm[x].g-fm[x].s)])):'');mkSort();
+  }else if(tab==='tm'){
+    const M={},tot={};D.seasons.forEach(z=>z.trades.forEach(t=>{const k=Object.keys(t.sides);k.forEach(a=>{tot[a]=(tot[a]||0)+1;k.forEach(b=>{if(a!==b)(M[a]=M[a]||{})[b]=((M[a]||{})[b]||0)+1})})}));
+    const ms=ids.filter(i=>tot[i]);
+    o.innerHTML='<p class="mut">Number of completed trades between each pair of managers (multi-team trades count for every pair involved).</p>'+tbl(['',...ms.map(nm),'Total'],ms.map(a=>[nm(a),...ms.map(b=>a===b?'-':((M[a]||{})[b]||'-')),tot[a]]));mkSort();
+  }else if(tab==='prof'){
+    o.innerHTML=sel('M',ids)+'<div id="mpo"></div>';
+    bind(()=>{const m=$('M').value,pn=D.pn||{},Z=D.seasons.filter(z=>z.rost&&z.rost[m]),r=C.ov[m]||{w:0,l:0,t:0,pf:0,pa:0};
+      const SS=Z.map(z=>{const q={w:0,l:0,t:0};z.games.filter(g=>!g.po&&(g.a===m||g.b===m)).forEach(g=>{const f=g.a===m?g.pa:g.pb,a=g.a===m?g.pb:g.pa;f>a?q.w++:f<a?q.l++:q.t++});return{s:z.season,q,wp:(q.w+q.t/2)/Math.max(1,q.w+q.l+q.t),res:z.champ===m?'Champion':z.runner===m?'Runner-up':inBr(z,m)?'Playoffs':'Missed'}}).filter(x=>x.q.w+x.q.l+x.q.t);
+      const best=[...SS].sort((a,b)=>b.wp-a.wp)[0],worst=[...SS].sort((a,b)=>a.wp-b.wp)[0];
+      const opp=Object.entries(C.h2h[m]||{}).map(([y,x])=>({y,g:x.w+x.l+x.t,wp:(x.w+x.t/2)/Math.max(1,x.w+x.l+x.t),x})).filter(e=>e.g>=3),own3=[...opp].sort((a,b)=>b.wp-a.wp).slice(0,3),nem=[...opp].sort((a,b)=>a.wp-b.wp).slice(0,3);
+      const TT=[];D.seasons.forEach(z=>z.trades.forEach(t=>{if(!t.sides[m])return;const v={};Object.entries(t.sides).forEach(([x,sd])=>{v[x]=sd.got.reduce((a,q)=>a+(q[1]||0),0)+(sd.pk||[]).reduce((a,q)=>a+(q.ros||0),0)});
+        const oth=Object.keys(v).filter(x=>x!==m);if(!oth.length)return;TT.push({w:z.season+' W'+t.wk,net:v[m]-oth.reduce((a,x)=>a+v[x],0)/oth.length,t,z})}));
+      const bt=[...TT].sort((a,b)=>b.net-a.net)[0],wt=[...TT].sort((a,b)=>a.net-b.net)[0];
+      const side=(t)=>[...t.sides[m].got.map(q=>pn[q[0]]||q[0]),...(t.sides[m].pk||[]).map(p=>p.n?p.l+' pick → '+p.n:p.l+' pick')].join(', ')||'-';
+      const dr=[];D.seasons.forEach(z=>(z.draft||[]).forEach(d=>{if(d.o===m&&d.pid)dr.push({...d,s:z.season})}));const f1s=dr.filter(d=>d.r===1);
+      const bp=[...dr].sort((a,b)=>b.pts-a.pts).slice(0,3);
+      $('mpo').innerHTML=`<div class="card"><div class="big">${nm(m)}</div><div class="mut">${Z.length} season${Z.length===1?'':'s'} &middot; ${rec(r)} (${pct(r)}) &middot; PF ${f1(r.pf)}</div>
+        <div class="mut">Titles ${Z.filter(z=>z.champ===m).length} &middot; Runner-ups ${Z.filter(z=>z.runner===m).length} &middot; Playoffs ${Z.filter(z=>inBr(z,m)).length}/${Z.length}${best?` &middot; Best season ${best.s} (${rec(best.q)}) &middot; Worst ${worst.s} (${rec(worst.q)})`:''}</div></div>`+
+        '<h3>Season by season</h3>'+tbl(['Season','Regular season','Result'],SS.map(x=>[x.s,rec(x.q),x.res]))+
+        '<h3>Rivals (3+ games)</h3>'+tbl(['','Opponent','Record','Games'],[...own3.map(e=>['Owns',nm(e.y),rec(e.x),e.g]),...nem.map(e=>['Nemesis',nm(e.y),rec(e.x),e.g])])+
+        '<h3>Trades</h3>'+(TT.length?`<p class="mut">${TT.length} trade${TT.length===1?'':'s'}. Value = points from what was received (players and the players taken with picks), regular season.</p>`+tbl(['','When','Received','Net pts vs partner(s)'],[['Best',bt.w,side(bt.t),'+'+f1(bt.net)],['Worst',wt.w,side(wt.t),f1(wt.net)]]):'<p class="mut">No trades.</p>')+
+        '<h3>Drafts</h3>'+(dr.length?`<p class="mut">${dr.length} picks${f1s.length?' &middot; average first-round pick #'+f1(f1s.reduce((a,d)=>a+d.n,0)/f1s.length):''}</p>`+tbl(['Best picks','Season','Pick','Pts'],bp.map(d=>[d.nm.trim()+(d.pos?' ('+d.pos+')':''),d.s,'#'+d.n+' (Rd '+d.r+')',f1(d.pts)])):'<p class="mut">No draft data.</p>');mkSort()},'M');
   }else if(tab==='streak'){
     o.innerHTML=tbl(['Manager','Best W streak','Worst L streak','Current'],ids.map(i=>{const r=C.st[i]||{bw:0,bl:0,cw:0,cl:0};return[nm(i),r.bw,r.bl,r.cw?'W'+r.cw:r.cl?'L'+r.cl:'-']}));
   }else if(tab==='rec'){
@@ -251,10 +290,6 @@ function render(){
     o.innerHTML='<h3>Most lopsided (3+ games)</h3>'+show(P.filter(p=>p.g>=3).sort((x,y)=>y.d/y.g-x.d/x.g||y.g-x.g).slice(0,8))+
       '<h3>Closest rivalries (4+ games)</h3>'+show(P.filter(p=>p.g>=4).sort((x,y)=>x.d/x.g-y.d/y.g||y.g-x.g).slice(0,8))+
       '<h3>Most played</h3>'+show([...P].sort((x,y)=>y.g-x.g).slice(0,8));
-  }else if(tab==='bench'){
-    const B={};D.seasons.forEach(s=>Object.entries(s.rost).forEach(([o,r])=>{if(r.p){const b=B[o]=B[o]||{f:0,p:0};b.f+=r.f;b.p+=r.p}}));
-    o.innerHTML='<p class="mut">Actual points vs best-possible lineup (Sleeper season totals; only seasons where Sleeper tracked it).</p>'+
-      tbl(['Manager','Actual','Potential','Left on bench','Efficiency'],Object.keys(B).sort((a,b)=>B[b].f/B[b].p-B[a].f/B[a].p).map(i=>[nm(i),f1(B[i].f),f1(B[i].p),f1(B[i].p-B[i].f),(B[i].f/B[i].p*100).toFixed(1)+'%']));
   }else if(tab==='draft'){
     o.innerHTML=`<div class="row"><select id="Y">${D.seasons.map(s=>`<option>${s.season}</option>`).join('')}</select>${sel('M',['all',...ids])}</div><div id="do"></div>`;
     D.names.all='All managers';$('Y').selectedIndex=D.seasons.length-1;
@@ -282,8 +317,9 @@ function render(){
         return{...r,val,net,ord,win:ord[0],lose:ord[ord.length-1],mg:val[ord[0]]-val[ord[ord.length-1]],tot:r.os.reduce((a,x)=>a+val[x],0)}});
       if(!TR.length){$('to').innerHTML='<p class="mut">No trades match.</p>';return}
       const pl=(t,x)=>t.sides[x].got.map(g=>`${pn[g[0]]||g[0]} <b>${f1(g[k]||0)}</b>`)
-        .concat((t.sides[x].pk||[]).map(g=>g.n?`${g.l} pick &rarr; ${g.n} <b>${f1((k===1?g.ros:g.st)||0)}</b>`:`${g.l} pick (not drafted yet)`)).concat(t.sides[x].faab?['FAAB '+(t.sides[x].faab>0?'+':'-')+'$'+Math.abs(t.sides[x].faab)]:[]).join('<br>')||'-';
-      const ba=(s,o,wk)=>{const b={w:0,l:0,t:0},a={w:0,l:0,t:0};s.games.forEach(g=>{if(g.po||(g.a!==o&&g.b!==o))return;
+        .concat((t.sides[x].pk||[]).map(g=>g.n?`${g.l} pick (#${g.pn}) &rarr; ${g.n} <b>${f1((k===1?g.ros:g.st)||0)}</b><br><span class="mut">started ${g.sw} wk${g.sw===1?'':'s'}, team won ${g.sx}${g.pg?` &middot; playoffs: ${g.pg} start${g.pg===1?'':'s'}, ${g.pgw} W, ${f1(g.pst)} pts`:''}${g.ch?' &middot; <b>helped win the title</b>':g.cw?' &middot; title team':''}</span>`:`${g.l} pick (not drafted yet)`)).concat(t.sides[x].faab?['FAAB '+(t.sides[x].faab>0?'+':'-')+'$'+Math.abs(t.sides[x].faab)]:[]).join('<br>')||'-';
+      const pkn=r=>{const L=[];r.os.forEach(x=>(r.t.sides[x].pk||[]).forEach(g=>{if(!g.n)return;if(g.ch)L.push(`${nm(x)}'s ${g.l} pick (${g.n}) started in the title run`);else if(g.sx)L.push(`${nm(x)}'s ${g.l} pick (${g.n}) started in ${g.sx} win${g.sx===1?'':'s'}`)}));return L.join('; ')},
+        ba=(s,o,wk)=>{const b={w:0,l:0,t:0},a={w:0,l:0,t:0};s.games.forEach(g=>{if(g.po||(g.a!==o&&g.b!==o))return;
         const f=g.a===o?g.pa:g.pb,q=g.a===o?g.pb:g.pa,r=g.week<wk?b:a;f>q?r.w++:f<q?r.l++:r.t++});return rec(b)+' → '+rec(a)};
       const res=(s,o)=>s.champ===o?'Champion':s.runner===o?'Runner-up':inBr(s,o)?'Playoffs':'Missed',when=r=>r.s.season+' W'+r.wk;
       const led={},pc={};
@@ -295,12 +331,12 @@ function render(){
       const main='<div class="wrap"><table><tr><th>When</th><th>Type</th><th>Manager</th><th>Received (pts)</th><th>Pts</th><th>Record before → after</th><th>Season</th><th>Result</th></tr>'+
         rows.map(r=>{const n=r.ord.length,type=r.ord.map(x=>r.t.sides[x].got.length+r.t.sides[x].picks.length).join('-for-');
           return r.ord.map((x,i)=>`<tr class="${i?'':'top'}">${i?'':`<td rowspan="${n}">${r.s.season}<br>W${r.wk}</td><td rowspan="${n}">${type}</td>`}<td>${nm(x)}</td><td class="wr">${pl(r.t,x)}</td><td>${f1(r.val[x])}</td><td>${ba(r.s,x,r.wk)}</td><td>${res(r.s,x)}</td><td class="${r.net[x]>0?'w':r.net[x]<0?'l':''}">${r.net[x]>0?'+':''}${f1(r.net[x])}</td></tr>`).join('')}).join('')+'</table></div>';
-      $('to').innerHTML=`<p class="mut">Value = ${k===1?'points the acquired players scored for the rest of that regular season, started or not':'points the acquired players scored while in the acquiring team\'s starting lineup, rest of regular season'}. Each draft pick is replaced by the player taken with it in that draft and valued only by that player\'s regular-season points in his draft season ('+(k===1?'all points':'points started by the team that made the pick')+'). Picks not yet drafted count as 0. FAAB is listed but not valued. Result = points gained vs the other side(s).</p>`+
+      $('to').innerHTML=`<p class="mut">Value = ${k===1?'points the acquired players scored for the rest of that regular season, started or not':'points the acquired players scored while in the acquiring team\'s starting lineup, rest of regular season'}. Each draft pick is replaced by the player taken with it in that draft and valued only by that player\'s regular-season points in his draft season ('+(k===1?'all points':'points started by the team that made the pick')+'). Under each pick: weeks he started for the team that made the pick, how many of those games the team won, playoff starts / wins / points, and whether that team won the championship with him in the lineup (playoff and title info is shown but not added to the value). Picks not yet drafted count as 0. FAAB is listed but not valued. Result = points gained vs the other side(s).</p>`+
         `<div class="card"><div class="big">${TR.length} trades</div><div class="mut">${bp?'Most frequent partners: '+bp[0].split('|').map(nm).join(' & ')+' ('+bp[1]+')':''}</div></div>`+
         '<h3>Trade ledger</h3>'+tbl(['Manager','Trades','Proposed','Won','Lost','Pts got','Pts sent','Net'],Object.keys(led).sort((a,b)=>(led[b].g-led[b].s)-(led[a].g-led[a].s)).map(i=>{const e=led[i],d=e.g-e.s;
           return[nm(i),e.n,e.i,e.w,e.l,f1(e.g),f1(e.s),`<span class="${d>0?'w':'l'}">${d>0?'+':''}${f1(d)}</span>`]}))+
         '<h3>Best trades</h3>'+tbl(['When','Winner (got)','Loser (got)','Margin'],top((x,y)=>y.mg-x.mg).map(r=>[when(r),`<b>${nm(r.win)}</b><br>${pl(r.t,r.win)}`,`${nm(r.lose)}<br>${pl(r.t,r.lose)}`,'+'+f1(r.mg)]))+
-        '<h3>Most impact (most points moved)</h3>'+tbl(['When','Sides','Pts moved','Notes'],top((x,y)=>y.tot-x.tot).map(r=>[when(r),r.os.map(x=>`${nm(x)}: ${f1(r.val[x])}`).join(' | '),f1(r.tot),[r.os.includes(r.s.champ)?'Champion involved':'',r.os.every(x=>inBr(r.s,x))?'All in playoffs':'',`Won by ${nm(r.win)}`].filter(Boolean).join('. ')]))+
+        '<h3>Most impact (most points moved)</h3>'+tbl(['When','Sides','Pts moved','Notes'],top((x,y)=>y.tot-x.tot).map(r=>[when(r),r.os.map(x=>`${nm(x)}: ${f1(r.val[x])}`).join(' | '),f1(r.tot),[r.os.includes(r.s.champ)?'Champion involved':'',r.os.every(x=>inBr(r.s,x))?'All in playoffs':'',`Won by ${nm(r.win)}`,pkn(r)].filter(Boolean).join('. ')]))+
         (()=>{const FL=D.seasons.filter(z=>y==='all'||z.season===y).flatMap(z=>z.failed||[]).filter(f=>m==='all'||f.c===m||f.o.includes(m)),fc={};FL.forEach(f=>{if(f.c)fc[f.c]=(fc[f.c]||0)+1});
           return '<h3>Trades that failed to process</h3>'+(FL.length?'<p class="mut">Trades Sleeper marked as not completed (for example failed on roster limits or vetoed), counted by who proposed them.</p>'+tbl(['Manager','Failed proposals'],Object.keys(fc).sort((a,b)=>fc[b]-fc[a]).map(i=>[nm(i),fc[i]])):'<p class="mut">None found. Sleeper\'s public API only lists trades that went through or failed processing. Offers that were declined, ignored or withdrawn are not exposed, so who sent the most rejected offers can\'t be calculated from it.</p>')})()+
         '<h3>All trades</h3>'+main},'V','Y','M','S');
@@ -363,17 +399,23 @@ function render(){
         ln('Champion',r.ch&&nm(r.ch))+ln('Runner-up',r.ru&&nm(r.ru))+ln('#1 seed',nm(r.sd))+ln('Most points',nm(r.sc))+ln('Fewest points',nm(r.lo))+ln('Luckiest',nm(r.lu))+ln('Unluckiest',nm(r.un))+
         ln('Top week',`${nm(r.hw[0])} ${f1(r.hw[1])}`)+ln('Biggest blowout',`${nm(r.bl.pa>r.bl.pb?r.bl.a:r.bl.b)} by ${f1(Math.abs(r.bl.pa-r.bl.pb))}`)+'</div>').join('')+'</div>';
   }else if(tab==='lineup'){
-    const A={},pn=D.pn||{};D.seasons.forEach(z=>Object.entries(z.lu||{}).forEach(([x,l])=>{const e=A[x]=A[x]||{a:0,p:0,n:0};e.a+=l.a;e.p+=l.p;e.n+=l.n}));
-    const B=D.seasons.flatMap(z=>(z.blun||[]).map(b=>[z.season,...b])).sort((a,b)=>(b[4]-b[3])-(a[4]-a[3])).slice(0,10);
-    o.innerHTML='<p class="mut">Optimal = best possible lineup from each week\'s full roster using your league\'s starting slots (hindsight, regular season). Efficiency = actual / optimal.</p>'+
-      tbl(['Manager','Weeks','Actual','Optimal','Left on bench','Per week','Efficiency'],Object.keys(A).sort((a,b)=>A[b].a/A[b].p-A[a].a/A[a].p).map(x=>{const e=A[x];return[nm(x),e.n,f1(e.a),f1(e.p),f1(e.p-e.a),f1((e.p-e.a)/e.n),(e.a/e.p*100).toFixed(1)+'%']}))+
-      '<h3>Worst lineup weeks</h3>'+tbl(['Manager','When','Actual','Optimal','Lost','Top benched'],B.map(b=>[nm(b[1]),b[0]+' W'+b[2],f1(b[3]),f1(b[4]),`<span class="l">${f1(b[4]-b[3])}</span>`,b[5]?`${pn[b[5]]||b[5]} ${f1(b[6])}`:'-']));
+    o.innerHTML=`<div class="row"><select id="Y"><option value="all">All seasons</option>${D.seasons.map(z=>`<option>${z.season}</option>`).join('')}</select></div><div id="lo"></div>`;
+    bind(()=>{const y=$('Y').value,S=D.seasons.filter(z=>y==='all'||z.season===y),pn=D.pn||{},A={},Bn={};
+      S.forEach(z=>{Object.entries(z.lu||{}).forEach(([x,l])=>{const e=A[x]=A[x]||{a:0,p:0,n:0};e.a+=l.a;e.p+=l.p;e.n+=l.n});
+        Object.entries(z.rost||{}).forEach(([x,r])=>{if(r.p){const b=Bn[x]=Bn[x]||{f:0,p:0};b.f+=r.f;b.p+=r.p}})});
+      const B=S.flatMap(z=>(z.blun||[]).map(b=>[z.season,...b])).sort((a,b)=>(b[4]-b[3])-(a[4]-a[3])).slice(0,10);
+      $('lo').innerHTML='<p class="mut">Optimal = best possible lineup from each week\'s full roster using your league\'s starting slots (hindsight, regular season). Efficiency = actual / optimal. Click a column heading to sort.</p>'+
+        tbl(['Manager','Weeks','Actual','Optimal','Left on bench','Per week','Efficiency'],Object.keys(A).sort((a,b)=>A[b].a/A[b].p-A[a].a/A[a].p).map(x=>{const e=A[x];return[nm(x),e.n,f1(e.a),f1(e.p),f1(e.p-e.a),f1((e.p-e.a)/e.n),(e.a/e.p*100).toFixed(1)+'%']}))+
+        '<h3>Worst lineup weeks</h3>'+tbl(['Manager','When','Actual','Optimal','Lost','Top benched'],B.map(b=>[nm(b[1]),b[0]+' W'+b[2],f1(b[3]),f1(b[4]),`<span class="l">${f1(b[4]-b[3])}</span>`,b[5]?`${pn[b[5]]||b[5]} ${f1(b[6])}`:'-']))+
+        (Object.keys(Bn).length?'<h3>Sleeper season totals (actual vs potential)</h3><p class="mut">Sleeper\'s own season totals, only seasons where it tracked potential points.</p>'+tbl(['Manager','Actual','Potential','Left on bench','Efficiency'],Object.keys(Bn).sort((a,b)=>Bn[b].f/Bn[b].p-Bn[a].f/Bn[a].p).map(i=>[nm(i),f1(Bn[i].f),f1(Bn[i].p),f1(Bn[i].p-Bn[i].f),(Bn[i].f/Bn[i].p*100).toFixed(1)+'%'])):'');mkSort()},'Y');
   }else if(tab==='pos'){
-    const A={},seen=new Set();D.seasons.forEach(z=>Object.entries(z.ps||{}).forEach(([x,m])=>{const e=A[x]=A[x]||{n:0,p:{}};e.n+=((z.lu||{})[x]||{}).n||0;Object.entries(m).forEach(([q,v])=>{e.p[q]=(e.p[q]||0)+v;seen.add(q)})}));
+    const y0=window._py||'all';o.innerHTML=`<div class="row"><select id="Y"><option value="all">All seasons</option>${D.seasons.map(z=>`<option>${z.season}</option>`).join('')}</select></div></div><div id="po2"></div>`;$('Y').value=y0;
+    bind(()=>{window._py=$('Y').value;
+    const y=$('Y').value,A={},seen=new Set();D.seasons.filter(z=>y==='all'||z.season===y).forEach(z=>Object.entries(z.ps||{}).forEach(([x,m])=>{const e=A[x]=A[x]||{n:0,p:{}};e.n+=((z.lu||{})[x]||{}).n||0;Object.entries(m).forEach(([q,v])=>{e.p[q]=(e.p[q]||0)+v;seen.add(q)})}));
     const cols=['QB','RB','WR','TE','K','DEF','DL','LB','DB'].filter(q=>seen.has(q)),ks=Object.keys(A),av=q=>ks.reduce((a,x)=>a+(A[x].p[q]||0)/A[x].n,0)/ks.length;
-    o.innerHTML='<p class="mut">Average points per week from starters at each position, with difference vs league average. Strongest/weakest = biggest gap vs average in percentage terms.</p>'+
+    $('po2').innerHTML='<p class="mut">Click a column heading to sort. Average points per week from starters at each position, with difference vs league average. Strongest/weakest = biggest gap vs average in percentage terms.</p>'+
       tbl(['Manager',...cols,'Strongest','Weakest'],ks.sort((a,b)=>nm(a).localeCompare(nm(b))).map(x=>{const d=cols.map(q=>(A[x].p[q]||0)/A[x].n-av(q)),rl=cols.map((q,i)=>d[i]/av(q));
-        return[nm(x),...cols.map((q,i)=>`${f1((A[x].p[q]||0)/A[x].n)} <span class="${d[i]>=0?'w':'l'}">${d[i]>=0?'+':''}${f1(d[i])}</span>`),cols[rl.indexOf(Math.max(...rl))],cols[rl.indexOf(Math.min(...rl))]]}));
+        return[nm(x),...cols.map((q,i)=>`${f1((A[x].p[q]||0)/A[x].n)} <span class="${d[i]>=0?'w':'l'}">${d[i]>=0?'+':''}${f1(d[i])}</span>`),cols[rl.indexOf(Math.max(...rl))],cols[rl.indexOf(Math.min(...rl))]]}));mkSort()},'Y');
   }else if(tab==='wv'){
     o.innerHTML=`<div class="row"><select id="Y"><option value="all">All seasons</option>${D.seasons.map(z=>`<option>${z.season}</option>`).join('')}</select></div><div id="wo"></div>`;
     bind(()=>{const y=$('Y').value,S=D.seasons.filter(z=>y==='all'||z.season===y),pn=D.pn||{},A={};
@@ -397,14 +439,16 @@ function render(){
         '<h3>Biggest busts</h3>'+tbl(['Player','Manager','Season','Pick','Pts','Drafted → finished'],[...R].sort((a,b)=>a.dl-b.dl).slice(0,10).map(row))+
         '<h3>Average points by round</h3>'+tbl(['Round','Avg pts per pick','Picks'],Object.keys(RD).sort((a,b)=>a-b).map(r=>[r,f1(RD[r].p/RD[r].n),RD[r].n]))},'Y');
   }else if(tab==='ph'){
-    o.innerHTML=sel('M',ids)+'<div id="pho"></div>';const di=ids.findIndex(i=>nm(i).toLowerCase().includes('drshroom'));if(di>=0)$('M').selectedIndex=di;
-    bind(()=>{const m=$('M').value,pn=D.pn||{},A={},B=[],tp={};
-      D.seasons.forEach(z=>{((z.wkc||{})[m]||[]).forEach(([pid,w,st])=>{const e=A[pid]=A[pid]||{w:0,st:0,ss:[]};e.w+=w;e.st+=st;e.ss.push(z.season);B.push([z.season,pid,w,st])});
+    o.innerHTML=sel('M',ids)+`<select id="Y"><option value="all">All seasons</option>${D.seasons.map(z=>`<option>${z.season}</option>`).join('')}</select><div id="pho"></div>`;
+    bind(()=>{const m=$('M').value,y=$('Y').value,S=D.seasons.filter(z=>y==='all'||z.season===y),pn=D.pn||{},A={},B=[],tp={};
+      S.forEach(z=>{((z.wkc||{})[m]||[]).forEach(([pid,w,st])=>{const e=A[pid]=A[pid]||{w:0,st:0,ss:[]};e.w+=w;e.st+=st;e.ss.push(z.season);B.push([z.season,pid,w,st])});
         Object.entries(z.topPos||{}).forEach(([q,l])=>l.forEach(([pid,t,ob])=>(tp[q]=tp[q]||[]).push([z.season,pid,t,ob])))});
       const lt=[];['QB','RB','WR','TE','K','DEF'].forEach(q=>(tp[q]||[]).sort((a,b)=>b[2]-a[2]).slice(0,3).forEach(e=>lt.push([q,pn[e[1]]||e[1],e[0],f1(e[2]),e[3]?nm(e[3]):'-'])));
-      $('pho').innerHTML='<h3>Most-rostered players</h3>'+tbl(['Player','Weeks rostered','Pts started','Seasons'],Object.entries(A).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([p,e])=>[pn[p]||p,e.w,f1(e.st),e.ss.join(', ')]))+
+      const L=Object.entries(A).sort((a,b)=>b[1].ss.length-a[1].ss.length||b[1].w-a[1].w).filter(([,e])=>e.ss.length>1).slice(0,10);
+      $('pho').innerHTML='<p class="mut">Click a column heading to sort.</p><h3>Most-rostered players</h3>'+tbl(['Player','Weeks rostered','Pts started','Seasons'],Object.entries(A).sort((a,b)=>b[1].w-a[1].w).slice(0,15).map(([p,e])=>[pn[p]||p,e.w,f1(e.st),e.ss.join(', ')]))+
+        (L.length?'<h3>Longest-held players (most seasons)</h3>'+tbl(['Player','Seasons held','Weeks rostered','Pts started'],L.map(([p,e])=>[pn[p]||p,e.ss.length,e.w,f1(e.st)])):'')+
         '<h3>Best player seasons (points started)</h3>'+tbl(['Player','Season','Weeks','Pts started'],B.sort((a,b)=>b[3]-a[3]).slice(0,10).map(b=>[pn[b[1]]||b[1],b[0],b[2],f1(b[3])]))+
-        '<h3>All-time league team (best regular seasons by position)</h3>'+tbl(['Pos','Player','Season','Pts','Rostered most by'],lt)},'M');
+        '<h3>All-time league team (best regular seasons by position)</h3>'+tbl(['Pos','Player','Season','Pts','Rostered most by'],lt);mkSort()},'M','Y');
   }else if(tab==='dh'){
     const P=[];D.seasons.forEach(z=>(z.draft||[]).forEach(d=>{if(d.pid)P.push({...d,s:z.season})}));
     if(!P.length){o.innerHTML='<p class="mut">No draft data.</p>';return}
@@ -433,10 +477,10 @@ function render(){
   }
 }
 const TABS=[['stand','Standings'],['h2h','Head-to-head'],['vs','Matchup'],['start','Season starts'],['fin','Finishes'],['po','Playoffs'],['miss','Missed out'],
-  ['luck','Luck'],['lineup','Lineups'],['pos','Positions'],['wv','Waivers'],['dv','Draft value'],['ph','Players'],['sched','Schedule luck'],['wk','Weekly awards'],['clutch','Clutch'],['trend','Trends'],['awards','Awards'],['streak','Streaks'],['rec','Records'],['cons','Consistency'],['riv','Rivalries'],['bench','Bench'],['draft','Drafts'],['act','Activity'],['trade','Trades'],['pow','Power'],['dh','Draft history']];
-const GROUPS=[['Overview',['stand','h2h','vs','fin','awards','start','riv']],['Playoffs & luck',['po','miss','luck','sched']],['Performance',['wk','clutch','trend','streak','rec','cons','pow']],['Rosters',['lineup','pos','bench','ph']],['Trades & drafts',['trade','act','wv','draft','dv','dh']]];
+['lineup','Lineups'],['pos','Positions'],['wv','Waivers'],['dv','Draft value'],['ph','Players'],['sched','Schedule luck'],['wk','Weekly awards'],['clutch','Clutch'],['trend','Trends'],['awards','Awards'],['streak','Streaks'],['rec','Records'],['cons','Consistency'],['riv','Rivalries'],['draft','Drafts'],['act','Activity'],['trade','Trades'],['pledger','Pick trades'],['tm','Trade partners'],['div','Divisions'],['prof','Manager profile'],['pow','Power'],['dh','Draft history']];
+const GROUPS=[['Overview',['prof','stand','div','h2h','vs','fin','awards','start','riv']],['Playoffs & luck',['po','miss','sched']],['Performance',['wk','clutch','trend','streak','rec','cons','pow']],['Rosters',['lineup','pos','ph']],['Trades & drafts',['trade','pledger','tm','act','wv','draft','dv','dh']]];
 function show(){
-  $('st').textContent=D.seasons.length+' seasons loaded ('+D.seasons.map(s=>s.season).join(', ')+')';$('snap').hidden=false;
+  $('st').textContent=D.seasons.length+' seasons loaded ('+D.seasons.map(s=>s.season).join(', ')+')';$('snap').hidden=false;$('csv').hidden=false;
   const L=Object.fromEntries(TABS);$('tabs').hidden=false;
   $('tabs').innerHTML='<select id="tabsel">'+GROUPS.map(([g,ks])=>`<optgroup label="${g}">${ks.map(k=>`<option value="${k}"${k===tab?' selected':''}>${L[k]}</option>`).join('')}</optgroup>`).join('')+'</select>';
   $('tabsel').onchange=e=>{tab=e.target.value;render()};
@@ -444,6 +488,10 @@ function show(){
 }
 $('go').onclick=async()=>{try{D=await fetchAll($('lid').value.trim());show()}catch(e){$('st').textContent='Error: '+e.message}};
 $('po').onchange=()=>D&&render();
+$('csv').onclick=()=>{const q=v=>'"'+String(v).replace(/\s+/g,' ').trim().replace(/"/g,'""')+'"',out=[];
+  document.querySelectorAll('#out table').forEach(t=>{let h=t.closest('.wrap');h=h&&h.previousElementSibling;while(h&&h.tagName!=='H3'&&h.previousElementSibling&&!/^H3$/.test(h.tagName))h=null;
+    if(h&&h.tagName==='H3')out.push(q(h.textContent));[...t.rows].forEach(r=>out.push([...r.cells].map(c=>q(c.textContent)).join(',')));out.push('')});
+  if(!out.length)return;const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+out.join('\n')],{type:'text/csv'}));a.download='sleeper-'+tab+'.csv';a.click()};
 $('snap').onclick=()=>{const h=ORIG.replace(/<script id="snapdata">[\s\S]*?<\/script>/,()=>'<script id="snapdata">window.SNAP='+JSON.stringify(D).replace(/</g,'\\u003c')+'<\/script>');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([h],{type:'text/html'}));a.download='sleeper-history-snapshot.html';a.click()};
 if(window.SNAP){D=window.SNAP;$('ctl').querySelector('#lid').hidden=$('go').hidden=true;show()}
